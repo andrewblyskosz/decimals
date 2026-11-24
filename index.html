@@ -54,6 +54,13 @@
   .cell{display:flex;align-items:center;justify-content:center;font-size:34px;font-weight:700;color:#4c1d95;height:100%}
   .line{grid-column:1/-1;height:5px;background:#1f2937;border-radius:3px;margin:2px 0}
 
+  /* long division */
+  .box.wide{width:clamp(56px,16vw,76px)}
+  .box.under{border-bottom:5px solid #1f2937;border-radius:10px 10px 4px 4px}
+  .dvc{border-top:5px solid #1f2937;padding:4px 2px 0}
+  .dvc.first{border-left:5px solid #1f2937;border-top-left-radius:12px;padding-left:4px}
+  .cell.arrow{font-size:26px;color:#7c3aed}
+
   /* rounding */
   .lab{font-size:9px;color:#6b7280;text-align:center;white-space:nowrap;height:12px}
   .dig{width:clamp(38px,11vw,54px);height:clamp(42px,12vw,58px);font-size:clamp(22px,7vw,32px);font-weight:700;border:3px solid #ddd6fe;border-radius:10px;background:#f5f3ff;color:#4c1d95;cursor:pointer;font-family:inherit;padding:0}
@@ -153,7 +160,7 @@ const INFO = {
   add:{video:'https://www.youtube.com/watch?v=WwKLA-6S-e0', vname:'adding', title:'Adding decimals', desc:'Line up the decimal points, add from the right, and carry when a column adds to 10 or more.', lv:['tenths','hundredths','mixed places']},
   sub:{video:'https://www.youtube.com/watch?v=a8tCGNB-vOk', vname:'subtracting', title:'Subtracting decimals', desc:'Line up the decimal points, subtract from the right, and borrow when the top digit is too small.', lv:['tenths','hundredths','mixed places']},
   mul:{video:'https://www.youtube.com/watch?v=Dm028SSei88', vname:'multiplying', title:'Multiplying decimals', desc:'Multiply like whole numbers (with carries), then count decimal places to put the decimal point in the right spot.', lv:['tenths × digit','hundredths × digit','decimal × tenths']},
-  div:{video:'https://www.youtube.com/watch?v=Val4TmjHXRY', vname:'dividing', title:'Dividing decimals', desc:'Divide from the left, one digit at a time. Write the remainder in front of the next digit.', lv:['tenths','hundredths','add a zero']},
+  div:{video:'https://www.youtube.com/watch?v=Val4TmjHXRY', vname:'dividing', title:'Dividing decimals', desc:'Long division: divide, multiply, subtract, then bring down the next digit. Repeat until you run out of digits. The decimal point goes straight up into the answer.', lv:['tenths','hundredths','add a zero']},
   round:{video:'https://www.youtube.com/watch?v=P7ozJW8LSxw', vname:'rounding', title:'Rounding decimals', desc:'Find the digit in the rounding place, look at the digit next to it, then decide: round up or stay the same?', lv:['whole numbers','tenths','mixed places']}
 };
 
@@ -257,32 +264,99 @@ function layoutMul(p){
 }
 
 function layoutDiv(p){
+  // classic long division: every step = divide (quotient digit), multiply (product), subtract (remainder), bring down
   const P = p10(p.dq);
   const wholeStr = String(Math.floor(p.S/P));
   const decStr = String(p.S%P).padStart(p.dq,'0');
-  const W = wholeStr.length, n = W + p.dq;
+  const W = wholeStr.length, n = W + p.dq, d = p.d;
   const a = (wholeStr+decStr).split('');                    // includes any zeros we have to add
-  const qw = String(Math.floor(p.qi/P)), qd = String(p.qi%P).padStart(p.dq,'0');
-  const s = splitCh(qw.padStart(W,' ')).concat(qd.split(''));
-  const aux = new Array(n).fill('');
-  let rem = 0;
-  for(let c=0; c<n; c++){
-    const v = rem*10 + (+a[c]);
-    rem = v % p.d;
-    if(c<n-1) aux[c+1] = rem>0 ? String(rem) : '';
+  let p0 = 0, pref = +a[0];
+  while(pref < d){ p0++; pref = pref*10 + (+a[p0]); }        // first digits that are big enough to divide
+  const steps = []; let rem = 0, ord = 100;
+  for(let pp=p0; pp<n; pp++){
+    const partial = pp===p0 ? pref : rem*10 + (+a[pp]);
+    const qd = Math.floor(partial/d), prod = qd*d;
+    rem = partial - prod;
+    const st = {p:pp, qd:String(qd), prod:String(prod), last:pp===n-1};
+    st.qOrd = ord++;
+    st.pOrd = st.prod.split('').map(() => ord++);
+    st.rCells = rem===0 ? [''] : String(rem).split('');        // a remainder of 0 can be left blank
+    st.rOrd = st.rCells.map(() => ord++);
+    if(!st.last) st.bOrd = ord++;
+    steps.push(st);
   }
-  return {op:'/', n, pt:W, a, b:[], s, aux, rows:['s','c','a'], setupRows:['a'], divisor:String(p.d)};
+  return {op:'/', n, W, pt:W, a, b:[], s:[], aux:[], rows:[], setupRows:['a'], divisor:String(d), steps};
 }
 
 const layoutFor = p => p.op==='*' ? layoutMul(p) : p.op==='/' ? layoutDiv(p) : layoutAddSub(p);
-const hasAux = l => l.aux.some(x => x!=='');
+const hasAux = l => l.op==='/' ? true : l.aux.some(x => x!=='');
 const answerText = p => p.op==='*' ? fmt(p.P,p.dp) : p.op==='/' ? fmt(p.qi,p.dq) : fmt(p.res,p.dp);
 
 /* =================== Grid for column problems =================== */
 const hasAuxBox = i => lay.op==='-' ? true : lay.op==='/' ? i>0 : i<lay.n-1;
 const solveDir = () => (lay.op==='/' || lay.op==='r') ? 1 : -1;      // divide + round go left->right
 
+function buildGridDiv(){
+  const g = $('grid'); g.innerHTML = '';
+  cells = {c:{}, a:{}, b:{}, s:{}, d:{}, r:{}, w:{}};
+  const n = lay.n, W = lay.W, total = n + 2;               // divisor column + digit columns + decimal point column
+  const gc = i => 1 + i + (i >= W ? 1 : 0);                // grid column of digit i (the point sits between whole and decimal digits)
+  const ptCol = 1 + W;
+  const tpl = ['auto'];
+  for(let i=0;i<n;i++){ if(i===W) tpl.push('16px'); tpl.push('auto'); }
+  g.style.gridTemplateColumns = tpl.join(' ');
+  const blank = () => document.createElement('div');
+  const txt = (t, cls) => { const x = document.createElement('div'); x.className = 'cell ' + (cls||''); x.textContent = t; return x; };
+  const mk = (row, key, role, exp, cls, maxLen, ord) => {
+    const inp = document.createElement('input');
+    inp.className = 'box ' + cls; inp.type = 'text'; inp.inputMode = 'numeric'; inp.maxLength = maxLen; inp.autocomplete = 'off';
+    inp.dataset.row = row; inp.dataset.col = key; inp.dataset.role = role; inp.dataset.exp = exp; inp.dataset.ord = ord;
+    inp.addEventListener('input', onInput);
+    inp.addEventListener('keydown', onKey);
+    inp.addEventListener('focus', () => inp.select());
+    cells[row][key] = inp;
+    return inp;
+  };
+  const fresh = () => { const r = []; for(let i=0;i<total;i++) r.push(blank()); return r; };
+  const emit = arr => arr.forEach(x => g.appendChild(x));
+
+  // row 1: answer digits on top, with the decimal point straight above the one in the dividend
+  const r0 = fresh();
+  lay.steps.forEach(s => { r0[gc(s.p)] = mk('s', s.p, 'ans', s.qd, '', 1, s.qOrd); });
+  r0[ptCol] = txt('.','');
+  emit(r0);
+  // row 2: divisor on the left, dividend inside the bracket
+  const r1 = fresh();
+  r1[0] = mk('d', 0, 'setup', lay.divisor, '', 1, 0);
+  lay.a.forEach((ch,i) => {
+    const w = document.createElement('div'); w.className = 'dvc' + (i===0 ? ' first' : '');
+    w.appendChild(mk('a', i, 'setup', ch, '', 1, 1+i)); r1[gc(i)] = w;
+  });
+  const dp = txt('.','dvc'); r1[ptCol] = dp;
+  emit(r1);
+  // working rows: multiply + subtract, then the remainder with the next digit brought down
+  lay.steps.forEach((s,si) => {
+    const pr = fresh(); pr[0] = txt('−','sign');
+    const L = s.prod.length;
+    s.prod.split('').forEach((ch,k) => { pr[gc(s.p-(L-1)+k)] = mk('w','p'+si+'_'+k,'work',ch,'under',1,s.pOrd[k]); });
+    if(!s.last) pr[gc(s.p+1)] = txt('↓','arrow');
+    emit(pr);
+    const dr = fresh(), RL = s.rCells.length;
+    s.rCells.forEach((ch,k) => { dr[gc(s.p-(RL-1)+k)] = mk('w','r'+si+'_'+k,'work',ch,'',1,s.rOrd[k]); });
+    if(!s.last) dr[gc(s.p+1)] = mk('w','b'+si,'work',lay.a[s.p+1],'',1,s.bOrd);
+    emit(dr);
+  });
+}
+
+function seqNav(el, dir){
+  const arr = [...$('grid').querySelectorAll('input')].sort((x,y) => x.dataset.ord - y.dataset.ord);
+  let i = arr.indexOf(el) + dir;
+  while(i>=0 && i<arr.length){ if(!arr[i].disabled){ arr[i].focus(); return true; } i += dir; }
+  return false;
+}
+
 function buildGrid(){
+  if(lay.op==='/') return buildGridDiv();
   const g = $('grid');
   g.innerHTML = '';
   cells = {c:{}, a:{}, b:{}, s:{}, d:{}};
@@ -336,6 +410,7 @@ function onInput(e){
   el.value = el.value.replace(/\D/g,'').slice(-el.maxLength);
   el.classList.remove('ok','bad','reveal');
   if(!el.value) return;
+  if(lay.op==='/'){ if(el.value.length >= el.maxLength) seqNav(el,1); return; }
   const row = el.dataset.row, col = +el.dataset.col;
   if(row==='c' && lay.op==='-') return;                  // borrow boxes hold 2 digits: don't jump away
   if(phase==='setup'){
@@ -348,6 +423,12 @@ function onInput(e){
 }
 function onKey(e){
   const el = e.target, row = el.dataset.row, col = +el.dataset.col;
+  if(lay.op==='/'){
+    if(e.key==='Enter'){ e.preventDefault(); mainAction(); }
+    else if(e.key==='ArrowLeft' || (e.key==='Backspace' && !el.value)){ e.preventDefault(); seqNav(el,-1); }
+    else if(e.key==='ArrowRight'){ e.preventDefault(); seqNav(el,1); }
+    return;
+  }
   if(e.key==='Enter'){ e.preventDefault(); mainAction(); }
   else if(e.key==='ArrowLeft'){ e.preventDefault(); moveH(row,col,-1); }
   else if(e.key==='ArrowRight'){ e.preventDefault(); moveH(row,col,1); }
@@ -381,17 +462,18 @@ function nextQ(){
   } while(!lay.hasAux && Math.random() < 0.8 && tries < 30);   // most problems need a carry / borrow / remainder
   phase = 'setup'; setupTries = 0;
   buildGrid();
-  for(const r of ['c','s']) Object.values(cells[r]).forEach(el => el.disabled = true);
+  if(lay.op==='/') document.querySelectorAll('#grid input').forEach(el => { if(el.dataset.role!=='setup') el.disabled = true; });
+  else for(const r of ['c','s']) Object.values(cells[r]).forEach(el => el.disabled = true);
   $('problem').textContent = `${cur.A} ${SYM[cur.op]} ${cur.B}`;
   $('step').innerHTML = {
     '+':'<b>Step 1:</b> Type both numbers into the boxes. Line up the decimal points!',
     '-':'<b>Step 1:</b> Type both numbers into the boxes. Line up the decimal points!',
     '*':'<b>Step 1:</b> Type both numbers into the boxes, lined up on the <b>right</b>. Ignore the decimal points for now.',
-    '/':'<b>Step 1:</b> Type the dividend (the number being shared) in the row and the divisor in the left box. You can add zeros to the end of a decimal.'
+    '/':'<b>Step 1:</b> Type the divisor (the number you divide by) on the left, and the dividend (the number being shared) inside the bracket, one digit per box. You can add zeros to the end of a decimal.'
   }[cur.op];
   $('check').textContent = 'Check my setup';
-  if(cur.op==='/'){ for(let c=0;c<lay.n;c++) if(focusCell('a',c)) break; }
-  else { for(let c=0;c<lay.n;c++) if(focusCell('a',c)) break; }
+  if(lay.op==='/') focusCell('d',0);
+  else for(let c=0;c<lay.n;c++) if(focusCell('a',c)) break;
 }
 
 // expected-blank boxes may be left empty or filled with a 0
@@ -400,7 +482,58 @@ const okDigit = (exp, val) => exp === '' ? (val==='' || val==='0') : val === exp
 const okAux = (exp, val, i) => exp !== '' ? val === exp
   : (lay.op==='-' ? (val==='' || val===(lay.a[i]||'0')) : (val==='' || val==='0'));
 
+function checkSetupDiv(){
+  setupTries++;
+  let all = true;
+  document.querySelectorAll('#grid input[data-role="setup"]').forEach(el => {
+    const good = el.value === el.dataset.exp;
+    el.classList.remove('ok','bad'); void el.offsetWidth; el.classList.add(good ? 'ok' : 'bad');
+    if(!good) all = false;
+  });
+  if(!all){
+    $('msg').innerHTML = '<span class="bad-t">Not quite – red boxes need fixing.<br><small>The divisor goes on the left of the bracket. The dividend goes inside it, one digit per box. You may need to add a zero at the end of the decimal.</small></span>';
+    return;
+  }
+  const P = ptsFor('/');
+  const pts = setupTries===1 ? P.setup : Math.max(1, Math.round(P.setup*0.4));
+  addPts(pts);
+  phase = 'solve';
+  document.querySelectorAll('#grid input').forEach(el => {
+    if(el.dataset.role==='setup'){ el.disabled = true; el.classList.remove('ok'); el.classList.add('lock'); }
+    else el.disabled = false;
+  });
+  $('step').innerHTML = '<b>Step 2:</b> Work down the page. <b>1)</b> How many times does the divisor fit? Write it on top. <b>2)</b> Multiply and write the answer under the number. <b>3)</b> Subtract. <b>4)</b> Bring down the next digit (↓). Repeat! The decimal point in the answer sits straight above the one in the dividend.';
+  $('msg').innerHTML = `<span class="good">✅ Set up correctly! +${pts}</span>`;
+  $('check').textContent = 'Check my answer';
+  const first = [...document.querySelectorAll('#grid input')].filter(el => !el.disabled).sort((x,y) => x.dataset.ord - y.dataset.ord)[0];
+  if(first) first.focus();
+}
+
+function checkAnswerDiv(){
+  let ansOK = true, auxOK = true;
+  document.querySelectorAll('#grid input').forEach(el => {
+    if(el.dataset.role==='setup') return;
+    const exp = el.dataset.exp, val = el.value;
+    el.disabled = true;
+    if(okDigit(exp, val)){ if(val!=='') el.classList.add('ok'); }
+    else {
+      el.value = exp; el.classList.add(exp!=='' ? 'reveal' : 'bad');
+      if(el.dataset.role==='ans') ansOK = false; else auxOK = false;
+    }
+  });
+  const P = ptsFor('/');
+  let pts = 0; if(ansOK) pts += P.ans; if(auxOK) pts += P.aux;
+  addPts(pts);
+  const perfect = ansOK && auxOK;
+  let html;
+  if(perfect) html = `<span class="good">🎉 Perfect! +${qPts}</span>`;
+  else if(ansOK) html = `<span class="meh">Right answer! +${qPts}<br><small>But check your working (multiplying, subtracting, bringing down) – the blue boxes show what they should be.</small></span>`;
+  else html = `<span class="bad-t">Not quite. The answer is ${answerText(cur)}<br><small>Blue boxes show the correct digits. Work down one step at a time.</small></span>`;
+  endQuestion(perfect, html);
+}
+
 function checkSetup(){
+  if(lay.op==='/') return checkSetupDiv();
   setupTries++;
   let all = true;
   const mark = (el, good) => { el.classList.remove('ok','bad'); void el.offsetWidth; el.classList.add(good?'ok':'bad'); if(!good) all = false; };
@@ -437,6 +570,7 @@ function checkSetup(){
 }
 
 function checkAnswer(){
+  if(lay.op==='/') return checkAnswerDiv();
   let ansOK = true, auxOK = true;
   for(let i=0;i<lay.n;i++) if(!okDigit(lay.s[i], cells.s[i].value)) ansOK = false;
   for(let i=0;i<lay.n;i++) if(hasAuxBox(i) && !okAux(lay.aux[i], cells.c[i].value, i)) auxOK = false;
